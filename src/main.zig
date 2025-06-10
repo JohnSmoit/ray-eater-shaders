@@ -1,46 +1,74 @@
-//! By convention, main.zig is where your main function lives in the case that
-//! you are building an executable. If you are making a library, the convention
-//! is to delete this file and start with root.zig instead.
-
-pub fn main() !void {
-    // Prints to stderr (it's a shortcut based on `std.io.getStdErr()`)
-    std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
-
-    // stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    const stdout_file = std.io.getStdOut().writer();
-    var bw = std.io.bufferedWriter(stdout_file);
-    const stdout = bw.writer();
-
-    try stdout.print("Run `zig build test` to run the tests.\n", .{});
-
-    try bw.flush(); // Don't forget to flush!
-}
-
-test "simple test" {
-    var list = std.ArrayList(i32).init(std.testing.allocator);
-    defer list.deinit(); // Try commenting this out and see if zig detects the memory leak!
-    try list.append(42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
-}
-
-test "use other module" {
-    try std.testing.expectEqual(@as(i32, 150), lib.add(100, 50));
-}
-
-test "fuzz example" {
-    const Context = struct {
-        fn testOne(context: @This(), input: []const u8) anyerror!void {
-            _ = context;
-            // Try passing `--fuzz` to `zig build test` and see if it manages to fail this test case!
-            try std.testing.expect(!std.mem.eql(u8, "canyoufindme", input));
-        }
-    };
-    try std.testing.fuzz(Context{}, Context.testOne, .{});
-}
-
 const std = @import("std");
 
-/// This imports the separate module containing `root.zig`. Take a look in `build.zig` for details.
-const lib = @import("RshLang_lib");
+const logger = std.log.scoped(.rsh_lang);
+
+const fs = std.fs;
+const Dir = fs.Dir;
+const File = fs.File;
+
+pub fn main() !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+
+    var args = try std.process.argsWithAllocator(allocator);
+    defer args.deinit();
+
+    // skip the exe name
+    if (!args.skip()) {
+        logger.err("No arguments specified -- terminating", .{});
+        return error.MissingArguments;
+    }
+
+    const source_filename = args.next() orelse {
+        logger.err("No source file specified -- terminating", .{});
+        return error.MissingSourceFile;
+    };
+
+    const output_filename = args.next() orelse {
+        logger.err("No output file specified -- terminating", .{});
+        return error.MissingOutputFile;
+    };
+
+    if (args.skip()) {
+        logger.info("Additional arguments specified -- ignoring", .{});
+    }
+
+    const input_file = fs.cwd().openFile(source_filename, File.OpenFlags{
+        .mode = .read_only,
+    }) catch |err| {
+        logger.err("Could not open {s} for reading {!} -- terminating", .{ source_filename, err });
+        return error.FileAccessDenied;
+    };
+    input_file.close();
+
+    var compile_process = std.process.Child.init(&[_][]const u8{
+        "glslc",
+        source_filename,
+        "-o",
+        output_filename,
+    }, allocator);
+
+    logger.info("Compiling {s} to SPIR-V (output: {s})", .{ source_filename, output_filename });
+
+    compile_process.spawn() catch |err| {
+        logger.err("Failed to spawn glslc process: {!}", .{err});
+        return err;
+    };
+
+    const status = try compile_process.wait();
+
+    switch (status) {
+        .Exited => |code| {
+            if (code != 0) {
+                logger.err("glslc process exited with value: {d}", .{code});
+                return error.ChildProcessFailed;
+            }
+        },
+        else => {
+            logger.err("glslc process {s}'d the f up man!", .{@tagName(status)});
+            return error.Fuck;
+        },
+    }
+}
