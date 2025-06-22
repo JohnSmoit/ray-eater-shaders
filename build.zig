@@ -5,19 +5,21 @@ pub fn build(b: *std.Build) void {
 
     const optimize = b.standardOptimizeOption(.{});
 
+    const img_mod = b.dependency("zigimg", .{}).module("zigimg");
+
     const mod = b.addModule("rshc", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
-        .optimize = optimize,
+        .optimize = optimize, 
     });
 
-    const lib = b.addLibrary(
-        .{
-            .name = "rshc",
-            .root_module = mod,
-            .linkage = .static,
-        },
-    );
+    mod.addImport("zimg", img_mod);
+
+    const lib = b.addLibrary(.{
+        .name = "rshc",
+        .root_module = mod,
+        .linkage = .static,
+    });
 
     b.installArtifact(lib);
 

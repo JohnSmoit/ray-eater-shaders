@@ -1,4 +1,5 @@
 const std = @import("std");
+const img = @import("zimg");
 
 const logger = std.log.scoped(.rsh_lang);
 
@@ -54,6 +55,11 @@ pub fn compileShaderAlloc(filename: []const u8, stage: ?Stage, allocator: Alloca
         } };
     };
 }
+
+pub fn loadImageFile(filename: []const u8, allocator: Allocator) !img.Image {
+    return try img.Image.fromFilePath(allocator, filename);
+}
+
 
 /// internal handler function for shader compilation...
 /// The public API function helps with setting up the tagged union a bit better
