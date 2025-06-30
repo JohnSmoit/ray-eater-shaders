@@ -10,6 +10,10 @@ const Dir = fs.Dir;
 const File = fs.File;
 const Child = std.process.Child;
 
+// Exports
+
+pub const obj = @import("obj_loader.zig");
+
 pub const CompileError = error{
     Unknown,
     ShaderCompilationError,
