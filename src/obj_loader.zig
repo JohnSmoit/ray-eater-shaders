@@ -123,27 +123,6 @@ const TokenList = std.ArrayListUnmanaged(Token);
 
 const buf_size: usize = 1024;
 
-fn makeTokens(comptime values: anytype) []const Token {
-    comptime var tokens: []const Token = &.{};
-
-    inline for (values) |val| {
-        tokens = tokens ++ [_]Token{
-            switch(@TypeOf(val)) {
-                DirectiveType => Token{.Directive = val},
-
-                f32 => Token{.FloatingPoint = val},
-                
-                struct {u32, u32, u32} => Token{.FaceDef = [3]u32{val[0], val[1], val[2]}},
-
-                []const u8 => Token{.String = val},
-            }
-        };
-    }
-
-    tokens = tokens ++ [_]Token{.{.EOF}};
-
-    return tokens;
-}
 
 allocator: Allocator,
 
@@ -279,6 +258,54 @@ fn validateAgainstTokens(self: *const Self, tokens: []const Token) !void {
     }
 }
 
+fn expectEqual(tok_str: []const u8, b: Token, allocator: Allocator) !void {
+    const tok = try Token.fromRaw(tok_str, allocator);
+    if (!tok.eql(b)) return error.MismatchedToken;
+}
+
+
+fn makeTokens(comptime values: anytype) []const Token {
+    comptime var tokens: []const Token = &.{};
+
+    inline for (values) |val| {
+        tokens = tokens ++ [_]Token{
+            switch(@TypeOf(val)) {
+                DirectiveType => Token{.Directive = val},
+
+                f32 => Token{.FloatingPoint = val},
+                
+                struct {u32, u32, u32} => Token{.FaceDef = [3]u32{val[0], val[1], val[2]}},
+
+                []const u8 => Token{.String = val},
+            }
+        };
+    }
+
+    tokens = tokens ++ [_]Token{.{.EOF}};
+
+    return tokens;
+}
+
+test "individual tokenization" {
+    var test_arena = ArenaAllocator.init(std.heap.page_allocator);
+    defer test_arena.deinit();
+
+    const allocator = test_arena.allocator();
+
+    // validate stuff
+    try expectEqual("v", .{.Directive = .Vertex}, allocator);
+    try expectEqual("vt", .{.Directive = .TexCoord}, allocator);
+    try expectEqual("vn", .{.Directive = .Normal}, allocator);
+    try expectEqual("1/2/3", .{.FaceDef = [3]u32{1, 2, 3}}, allocator);
+    try expectEqual("1//2", .{.FaceDef = [3]u32{1, 0, 2}}, allocator);
+
+    //NOTE: Likely issue with the exisitng parser scheme
+    // (Ambiguity between single face def and floating point number)
+    try expectEqual("1", .{.FaceDef = [_]u32{1, 0, 0}}, allocator);
+    try expectEqual("1/2", .{.FaceDef = [_]u32{1, 2, 0}}, allocator);
+    try expectEqual("Cube", .{.String = "Cube"}, allocator);
+    try expectEqual("-1.02", .{.FloatingPoint = -1.02}, allocator);
+}
 
 test "valid file" {
     var test_arena = ArenaAllocator.init(std.heap.page_allocator);
