@@ -40,6 +40,7 @@ const Token = union(TokenType) {
         .{"o", .Name},
         .{"usemtl", .UseMat},
         .{"mtllib", .MatLib},
+        .{"s", .Smooth},
     });
 
     Directive: DirectiveType,
@@ -125,15 +126,16 @@ const Token = union(TokenType) {
             return Token{.Directive = v};
         }
 
+        const face: ?[3]u32 = parseFaceDef(raw);
+        if (face) |f| {
+            return Token{.FaceDef = f};
+        }
+
         const fp: ?f32 = std.fmt.parseFloat(f32, raw) catch null;
         if (fp) |v| {
             return Token{.FloatingPoint = v};
         }
 
-        const face: ?[3]u32 = parseFaceDef(raw);
-        if (face) |f| {
-            return Token{.FaceDef = f};
-        }
 
         const str = try allocator.alloc(u8, raw.len);
         @memcpy(str, raw);
@@ -187,62 +189,86 @@ pub fn deinit(self: *Self) void {
     self.tokens.deinit(self.allocator);
 }
 
+
 const TokenizerState = struct {
     buf: []u8,
     buf_size: usize = 0,
     pos: usize = 0,
     file: std.fs.File,
 
+
+    fn isDelimiter(c: u8) bool {
+        const delim = [_]u8{' ', '\t', '\r', '\n'};
+
+        for (delim) |d| {
+            if (c == d) return true;
+        }
+
+        return false;
+    }
+
+    pub fn nextLine(self: *TokenizerState) ?[]const u8 {
+        var line_begin = self.pos;
+        var line_end = self.pos;
+
+        while (self.buf[self.pos] != '\n') : (self.pos += 1) {
+            if (self.pos == self.buf_size) {
+                const len = line_end - line_begin;
+                const fpos = self.file.getPos() catch return null;
+
+                self.file.seekTo(fpos - len) catch return null;
+                self.buf_size = self.file.read(self.buf) catch return null;
+                
+                self.pos = 0;
+                line_begin = 0;
+                line_end = len;
+
+                if (self.buf_size == 0) return null;
+            }
+
+            line_end += 1;
+        }
+
+        self.pos += 1;
+
+        return self.buf[line_begin..line_end];
+    }
+
     /// ## Notes:
     /// - A return value of null indicates the EOF token...
-    pub fn nextTokenRaw(self: *TokenizerState) ?[]u8 {
+    pub fn nextTokenRaw(line_pos: usize, line: []const u8) ?[]const u8 {
         // Stop conditions: 
         //  - Whitespace character encountered
         //  - End of File encountered
         //      - reach buf size position, re read, then buf size = 0
         //
-        //  Special Case: 
+        // Special Case: 
         //  - End of buffer in the middle of token
         //      - Handle this by refilling the buffer at an offset and resetting the token indices
         //  - Returned token slice is valid until the next token is retrieved, since the buffer
         //    could refill then
 
         // eat preceding whitespace
-        while (std.ascii.isWhitespace(self.buf[self.pos])): (self.pos += 1) {
-            if (self.pos == self.buf_size) {
-                self.buf_size = self.file.read(self.buf) catch return null;
+        if (line.len == 0 or line_pos >= line.len) return null;
 
-                if (self.buf_size == 0) return null;
-            }
+        var pos = line_pos;
+
+        while (pos != line.len and isDelimiter(line[pos])) : (pos += 1) {}
+
+        const sym_begin = pos;
+        var sym_end = pos;
+
+
+        while (pos != line.len and !isDelimiter(line[pos])) : (pos += 1) {
+            sym_end += 1;
         }
 
-        var sym_begin = self.pos;
-        var sym_end = self.pos;
-
-
-        while (!std.ascii.isWhitespace(self.buf[self.pos]) and self.buf_size != 0) : (sym_end += 1) {
-            if (self.pos == self.buf_size) {
-                const sym_len: u64 = @intCast(sym_end - sym_begin);
-                const fpos = self.file.getPos() catch return null;
-
-                self.file.seekTo(fpos - sym_len) catch return null;
-                self.buf_size = self.file.read(self.buf) catch return null;
-
-                sym_begin = 0;
-                sym_end = sym_len;
-
-                self.pos = 0;
-            }
-
-            self.pos += 1;
-        }
-
-        if (self.buf_size == 0) {
+        if (sym_end == sym_begin) {
+            std.debug.print("End of the line bro\n", .{});
             return null;
-        } else {
-            std.debug.print("Lexeme: {s}\n", .{self.buf[sym_begin..sym_end]});
-            return self.buf[sym_begin..sym_end];
         }
+
+        return line[sym_begin..sym_end];
     }
 };
 
@@ -260,26 +286,158 @@ fn tokenize(self: *Self, file: File) !void {
     };
 
     tokenizer.buf_size = try file.read(buf);
+    while (tokenizer.nextLine()) |line| {
+        var line_pos: usize = 0;
 
-    while (tokenizer.nextTokenRaw()) |raw| {
-        const tok = try Token.fromRaw(raw, allocator);
-        try self.tokens.append(allocator, tok);
+        if (line.len > 0 and line[0] == '#') continue;
+
+        while (TokenizerState.nextTokenRaw(line_pos, line)) |raw| {
+            const tok = try Token.fromRaw(raw, allocator);
+            try self.tokens.append(allocator, tok);
+
+            line_pos += raw.len + 1;
+        }
+
     }
 
     try self.tokens.append(allocator, .EOF);
 }
 
-
 // =====================================================
 // *********** ANALYSIS AND OUTPUT CREATION ************
 // =====================================================
 
-pub const Data = struct {
+pub const Vec3f = struct {
+    x: f32,
+    y: f32,
+    z: f32,
 };
 
-pub fn getData(self: *const Self) !Data {
+pub const LoadResult = union(enum) {
+    Failure: struct {
+        err: anyerror,
+        token: ?*const Token = null,
+    },
 
-    _ = self;
+    // For simple models, we can just ignore shape groups and merge it all together
+    Success: struct {
+        verts: []const Vec3f,
+        indices: []const u32,
+
+        allocator: Allocator,
+
+        pub fn deinit(self: *@This()) void {
+            self.allocator.free(self.verts);
+            self.allocator.free(self.indices);
+        }
+    },
+};
+
+pub const TriangulationMode = enum {
+    Full, // just include all vertices
+    DiscardByNormals, // discards duplicate vertices (by excluding normals)
+};
+
+// ====================================
+// ********* DIRECTIVE TYPES **********
+// ====================================
+
+const VertRef = struct {
+    x: *const f32,
+    y: *const f32,
+    z: *const f32,
+};
+
+const TexRef = struct {
+    u: *const f32,
+    v: *const f32,
+};
+
+const NormRef = struct {
+    x: *const f32,
+    y: *const f32,
+    z: *const f32,
+};
+
+const FaceRef = struct {
+    faces: [4]*const [3]u32,
+};
+
+const Table = struct {
+
+    verts: std.ArrayList(VertRef),
+    uvs: std.ArrayList(TexRef),
+    normals: std.ArrayList(NormRef),
+    faces: std.ArrayList(FaceRef),
+
+    // FIXME: Partial allocation failures result in the lists being created previously
+    // memory leaking all over the place
+    pub fn init(allocator: Allocator) !@This() {
+        return .{
+            .verts = try std.ArrayList(VertRef).init(allocator),
+            .uvs = try std.ArrayList(TexRef).init(allocator),
+            .normals = try std.ArrayList(NormRef).init(allocator),
+            .faces = try std.ArrayList(FaceRef).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *@This()) void {
+        self.verts.deinit();
+        self.uvs.deinit();
+        self.normals.deinit();
+        self.faces.deinit();
+    }
+};
+
+/// iterator-style next token function
+/// ## Notes:
+/// * Upon encountering the EOF token, returns null
+pub fn nextToken(self: *Self) ?*const Token {
+}
+
+/// All of these directive parsers return null on success
+/// otherwise, they return the invalid token index in question
+fn parseVertex(self: *Self, tbl: *Table) ?usize {
+
+} 
+
+fn parseTexCoord(self: *Self, tbl: *Table) ?usize {
+
+}
+
+fn parseNormal(self: *Self, tbl: *Table) ?usize {
+
+}
+
+fn parseFace(self: *Self, tbl: *Table) ?usize {
+
+}
+
+// ## Notes:
+// * All output data is allocated since we don't really know how much of it there'll be at comptime
+// * I don't use the instance bound allocator for output since, I want the user to own the resulting resource
+pub fn getData(self: *Self, tri: TriangulationMode, allocator: Allocator) LoadResult {
+    var table = Table.init(self.allocator) catch |err| return .{.Failure = .{.err = err}};
+
+    while (self.nextToken()) |tok| {
+        if (tok.getType() != .Directive) {
+            return .{.Failure = .{.err = error.DirectiveExpected, .token = tok}}; 
+        }
+
+        // token dispatch table
+        const res = switch (tok.Directive) {
+            .Vertex => self.parseVertex(&table),
+            .TexCoord => self.parseTexCoord(&table),
+            .Normal => self.parseNormal(&table),
+            .Face => self.parseFace(&table),
+            else => self.skip(),
+        };
+
+        if (res != null) {
+            return .{.Failure = .{.err = error.InvalidToken, .token = res.?}};
+        }
+    }
+    _ = tri;
 }
 
 // ===================================
