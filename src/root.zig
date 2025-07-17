@@ -12,14 +12,18 @@ const Child = std.process.Child;
 
 // Exports
 
-pub const obj = @import("obj_loader.zig");
+//pub const obj = @import("obj_loader.zig");
 
 pub const CompileError = error{
     Unknown,
     ShaderCompilationError,
 };
 
-pub const CompileResult = union(enum) {
+const CompileStatus = enum {
+    Success,
+    Failure
+};
+pub const CompileResult = union(CompileStatus) {
     Success: []u8,
     Failure: struct {
         status: anyerror = CompileError.Unknown,
@@ -30,6 +34,7 @@ pub const CompileResult = union(enum) {
 pub const Stage = enum {
     Vertex,
     Fragment,
+    Compute,
 };
 
 /// ## Brief
@@ -90,7 +95,6 @@ fn handleShaderCompilation(
         ".spv",
     });
 
-    std.debug.print("Output Filename: {s}\n", .{output_filename});
 
     var compile_process: Child = undefined;
 
@@ -98,16 +102,17 @@ fn handleShaderCompilation(
         const stage_arg = switch (stage.?) {
             .Fragment => "frag",
             .Vertex => "vert",
+            .Compute => "comp",
         };
 
         const stage_name = "-fshader-stage=" ++ stage_arg;
 
         compile_process = Child.init(&[_][]const u8{
             "glslc",
+            stage_name,
             source_filename,
             "-o",
             output_filename,
-            stage_name,
         }, scratch);
     } else {
         compile_process = Child.init(&[_][]const u8{
@@ -130,13 +135,12 @@ fn handleShaderCompilation(
 
     switch (status) {
         .Exited => |code| {
-            std.debug.print("GLSLC process exited with code {d}\n", .{code});
 
             if (code != 0) {
                 return CompileResult{
                     .Failure = .{
                         .status = CompileError.ShaderCompilationError,
-                        .message = try std_output.toOwnedSlice(persistent),
+                        .message = try err_output.toOwnedSlice(persistent),
                     },
                 };
             } else {
@@ -156,6 +160,15 @@ fn handleShaderCompilation(
 // basic tests to make sure compilation works at least most of some of the time
 const expect = std.testing.expect;
 
+
+fn expectStatus(res: CompileResult, status: CompileStatus) !void {
+    if (!switch(res) {
+        .Success => status == .Success,
+        .Failure => status == .Failure,
+    }) return error.IncorrectStatus;
+
+}
+
 test "valid sources" {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const allocator = arena.allocator();
@@ -167,20 +180,34 @@ test "valid sources" {
 
 test "compilation error" {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
     const allocator = arena.allocator();
 
     const result = compileShaderAlloc("test/bad_shader.glsl", .Fragment, allocator);
 
-    std.debug.print("Error {s}: \n{d}\n", .{ @errorName(result.Failure.status), result.Failure.message.?.len });
-
+    try expectStatus(result, .Failure);
     try expect(result.Failure.status == CompileError.ShaderCompilationError);
 }
 
 test "nonexistent file" {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
     const allocator = arena.allocator();
+
 
     const result = compileShaderAlloc("test/nonexistent.glsl", .Fragment, allocator);
 
+    try expectStatus(result, .Failure);
     try expect(result.Failure.status == File.OpenError.FileNotFound);
+}
+
+test "compute" {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const result = compileShaderAlloc("test/compute.glsl", .Compute, allocator);
+
+    try expectStatus(result, .Success);
+    try expect(result.Success.len != 0);
 }

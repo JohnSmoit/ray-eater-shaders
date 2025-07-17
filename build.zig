@@ -29,6 +29,6 @@ pub fn build(b: *std.Build) void {
 
 
     const test_run_cmd = b.addRunArtifact(tests);
-    const test_step = b.step("test-all", "run all rshc unit tests");
+    const test_step = b.step("test", "run all rshc unit tests");
     test_step.dependOn(&test_run_cmd.step);
 }
