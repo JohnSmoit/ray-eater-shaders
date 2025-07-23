@@ -19,10 +19,7 @@ pub const CompileError = error{
     ShaderCompilationError,
 };
 
-const CompileStatus = enum {
-    Success,
-    Failure
-};
+const CompileStatus = enum { Success, Failure };
 pub const CompileResult = union(CompileStatus) {
     Success: []u8,
     Failure: struct {
@@ -69,7 +66,6 @@ pub fn loadImageFile(filename: []const u8, allocator: Allocator) !img.Image {
     return try img.Image.fromFilePath(allocator, filename);
 }
 
-
 /// internal handler function for shader compilation...
 /// The public API function helps with setting up the tagged union a bit better
 /// this makes error handling less tedious since the only type of error I plan to explicitly handle
@@ -94,7 +90,6 @@ fn handleShaderCompilation(
         source_filename,
         ".spv",
     });
-
 
     var compile_process: Child = undefined;
 
@@ -135,7 +130,6 @@ fn handleShaderCompilation(
 
     switch (status) {
         .Exited => |code| {
-
             if (code != 0) {
                 return CompileResult{
                     .Failure = .{
@@ -151,7 +145,12 @@ fn handleShaderCompilation(
                 // this tries to keep bytes aligned to u32 boundaries as vulkan expects
                 // for its bytecodes.
                 const file_size: usize = @intCast(try output_file.getEndPos());
-                const file_contents = try persistent.alloc(u8, file_size + @rem(file_size, @sizeOf(u32)));
+
+                const file_contents = try persistent.alignedAlloc(
+                    u8,
+                    @sizeOf(u32),
+                    file_size + @rem(file_size, @sizeOf(u32)),
+                );
                 errdefer persistent.free(file_contents);
 
                 _ = try output_file.readAll(file_contents);
@@ -168,24 +167,22 @@ fn handleShaderCompilation(
 // basic tests to make sure compilation works at least most of some of the time
 const expect = std.testing.expect;
 
-
 fn expectStatus(res: CompileResult, status: CompileStatus) !void {
-    if (!switch(res) {
+    if (!switch (res) {
         .Success => status == .Success,
         .Failure => status == .Failure,
     }) return error.IncorrectStatus;
-
 }
 
 fn expectAlignment(res: CompileResult, by: u32) !void {
-    if (!switch(res) {
+    if (!switch (res) {
         .Failure => false,
         .Success => |bytes| sb: {
             if (@rem(bytes.len, by) != 0) {
                 logger.err("Invalid aligmnent: {d} extra bytes", .{@rem(bytes.len, by)});
                 break :sb false;
             }
-            
+
             break :sb true;
         },
     }) return error.InvalidAlignment;
@@ -216,7 +213,6 @@ test "nonexistent file" {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-
 
     const result = compileShaderAlloc("test/nonexistent.glsl", .Fragment, allocator);
 
