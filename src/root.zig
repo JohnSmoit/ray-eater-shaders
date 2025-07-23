@@ -145,9 +145,17 @@ fn handleShaderCompilation(
                 };
             } else {
                 const output_file = try dir.openFile(output_filename, .{});
+                defer output_file.close();
 
                 // temporary and dangerous!!
-                const file_contents = try output_file.readToEndAlloc(persistent, std.math.maxInt(usize));
+                // this tries to keep bytes aligned to u32 boundaries as vulkan expects
+                // for its bytecodes.
+                const file_size: usize = @intCast(try output_file.getEndPos());
+                const file_contents = try persistent.alloc(u8, file_size + @rem(file_size, @sizeOf(u32)));
+                errdefer persistent.free(file_contents);
+
+                _ = try output_file.readAll(file_contents);
+
                 return CompileResult{
                     .Success = file_contents,
                 };
@@ -169,6 +177,20 @@ fn expectStatus(res: CompileResult, status: CompileStatus) !void {
 
 }
 
+fn expectAlignment(res: CompileResult, by: u32) !void {
+    if (!switch(res) {
+        .Failure => false,
+        .Success => |bytes| sb: {
+            if (@rem(bytes.len, by) != 0) {
+                logger.err("Invalid aligmnent: {d} extra bytes", .{@rem(bytes.len, by)});
+                break :sb false;
+            }
+            
+            break :sb true;
+        },
+    }) return error.InvalidAlignment;
+}
+
 test "valid sources" {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const allocator = arena.allocator();
@@ -176,6 +198,7 @@ test "valid sources" {
     const result = compileShaderAlloc("test/shader.vert", null, allocator);
 
     try expect(result.Success.len != 0);
+    try expectAlignment(result, 4);
 }
 
 test "compilation error" {
@@ -210,4 +233,5 @@ test "compute" {
 
     try expectStatus(result, .Success);
     try expect(result.Success.len != 0);
+    try expectAlignment(result, 4);
 }
