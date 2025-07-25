@@ -54,7 +54,6 @@ pub const ShaderCompiler = struct {
 
     allocator: std.mem.Allocator,
     compiler: c.shaderc_compiler_t,
-    owned_buffers: BufferList,
 
     fn handleShaderComp(
         self: *ShaderCompiler,
@@ -77,34 +76,23 @@ pub const ShaderCompiler = struct {
         const status = c.shaderc_result_get_compilation_status(res);
         if (status != c.shaderc_compilation_status_success) {
             const error_msg: [*:0]const u8 = @ptrCast(c.shaderc_result_get_error_message(res));
-            const buf = try std.mem.concat(self.allocator, u8, &.{
-                std.mem.span(error_msg),
-            });
-            try self.owned_buffers.append(self.allocator, buf);
 
             return Result{ .Failure = .{
                 .status = Error.ShaderCompilationError,
-                .message = buf,
+                .message = std.mem.span(error_msg),
             } };
         }
 
         const res_size = c.shaderc_result_get_length(res);
         const bytes = c.shaderc_result_get_bytes(res)[0..res_size];
-        const buf = try std.mem.concat(
-                self.allocator,
-                u8,
-                &.{bytes[0..res_size]},
-        );
-        try self.owned_buffers.append(self.allocator, buf);
 
         return Result{
-            .Success = buf,
+            .Success = bytes,
         };
     }
 
     pub fn init(allocator: Allocator) !ShaderCompiler {
         return .{
-            .owned_buffers = try BufferList.initCapacity(allocator, 2), 
             .allocator = allocator,
             .compiler = c.shaderc_compiler_initialize() orelse
                 return error.ShaderCompilerInitFailed,
@@ -113,10 +101,6 @@ pub const ShaderCompiler = struct {
 
     pub fn deinit(self: *ShaderCompiler) void {
         c.shaderc_compiler_release(self.compiler);
-
-        for (self.owned_buffers.items) |buf|
-            self.allocator.free(buf);
-        self.owned_buffers.deinit(self.allocator);
     }
 
     /// ## Brief
@@ -210,7 +194,7 @@ fn expectAlignment(res: CompileResult, by: u32) !void {
     if (!switch (res) {
         .Failure => false,
         .Success => |bytes| sb: {
-            if (@rem(bytes.len, by) != 0 and @rem(@intFromPtr(bytes.ptr), by) == 0) {
+            if (@rem(bytes.len, by) != 0 or @rem(@intFromPtr(bytes.ptr), by) != 0) {
                 logger.err("Invalid aligmnent: {d} extra bytes", .{@rem(bytes.len, by)});
                 break :sb false;
             }
@@ -220,8 +204,12 @@ fn expectAlignment(res: CompileResult, by: u32) !void {
     }) return error.InvalidAlignment;
 }
 
+const TestingAllocator = std.heap.DebugAllocator(.{
+    .safety = true,
+});
+
 test "valid sources" {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    var arena = TestingAllocator.init;
     const allocator = arena.allocator();
 
     var compiler = try ShaderCompiler.init(allocator);
@@ -232,11 +220,11 @@ test "valid sources" {
     try expectStatus(result, .Success);
     try expect(result.Success.len != 0);
     try expectAlignment(result, 4);
+    try expect(arena.deinit() == .ok);
 }
 
 test "compilation error" {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
+    var arena = TestingAllocator.init;
     const allocator = arena.allocator();
 
     var compiler = try ShaderCompiler.init(allocator);
@@ -246,11 +234,11 @@ test "compilation error" {
 
     try expectStatus(result, .Failure);
     try expect(result.Failure.status == ShaderError.ShaderCompilationError);
+    try expect(arena.deinit() == .ok);
 }
 
 test "nonexistent file" {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
+    var arena = TestingAllocator.init;
     const allocator = arena.allocator();
 
     var compiler = try ShaderCompiler.init(allocator);
@@ -260,13 +248,30 @@ test "nonexistent file" {
 
     try expectStatus(result, .Failure);
     try expect(result.Failure.status == File.OpenError.FileNotFound);
+    try expect(arena.deinit() == .ok);
+}
+
+test "multi complations" {
+    var arena = TestingAllocator.init;
+    const allocator = arena.allocator();
+
+    var compiler = try ShaderCompiler.init(allocator);
+    defer compiler.deinit();
+
+    for (0..2) |_| {
+        const result = compiler.fromFile("test/shader.vert", .Vertex);
+
+        try expectStatus(result, .Success);
+        try expect(result.Success.len != 0);
+        try expectAlignment(result, 4);
+    }
+    try expect(arena.deinit() == .ok);
 }
 
 test "inferrence" {}
 
 test "compute" {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
+    var arena = TestingAllocator.init;
     const allocator = arena.allocator();
 
     var compiler = try ShaderCompiler.init(allocator);
@@ -277,4 +282,5 @@ test "compute" {
     try expectStatus(result, .Success);
     try expect(result.Success.len != 0);
     try expectAlignment(result, 4);
+    try expect(arena.deinit() == .ok);
 }
