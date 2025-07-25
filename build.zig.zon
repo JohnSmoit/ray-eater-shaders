@@ -40,6 +40,10 @@
             .url = "git+https://github.com/zigimg/zigimg.git#6b9ddc1e94cd80183a2d4a8403cc60c8d2ef0d2a",
             .hash = "zigimg-0.1.0-8_eo2gimEgBDuZcXm0MsbNDjkzRDk-lWSPrUa_bLf0IC",
         },
+        .shaderc_zig = .{
+            .url = "git+https://github.com/tiawl/shaderc.zig.git#06565d2af3beec9780b11524984211ebd104fd21",
+            .hash = "shaderc_zig-1.0.0-mOl840tjAwBiAnMSfRskq0Iq3JJ9jPRHy2JoEgnUvSpV",
+        },
     },
     .paths = .{
         "build.zig",
